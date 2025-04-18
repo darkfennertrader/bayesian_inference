@@ -16,119 +16,55 @@ from pyro.ops.indexing import Vindex
 import pyro.poutine as poutine
 from pyro.util import ignore_jit_warnings
 
+# 1. High-Level Explanation
+# Bayesian hierarchical AR(1)-GARCH(1,1) with Student-T innovations You model a panel
+# (multiple-assets) of time series using a vectorized AR(1)-GARCH(1,1) model with Student-T
+# innovations and partial pooling (hierarchical priors). This allows each asset to have its own
+# parameters (omega, alpha, beta, AR(1) phi, etc.) drawn from learned global priors (hyperpriors),
+# but encourages sharing statistical strength across assets.
 
-# A GARCH model (Generalized Autoregressive Conditional Heteroskedasticity) is a time-series model
-# typically used to describe and forecast volatility (or variance) that evolves over time. In
-# financial contexts, it is frequently employed to capture the “clustering” effect of volatility:
-# large swings in prices tend to be followed by large swings (of either sign), and small swings tend
-# to be followed by small swings. Below is the high-level idea of GARCH(1,1), the most common form:
-# Volatility changes over time: Instead of volatility (standard deviation) being constant, it is
-# allowed to vary each period. We refer to the variance of period t as sigma_t^2. Recurrence
-# relation for volatility: A GARCH(1,1) model can be written as:
-
-#           sigma_t^2 = omega + alpha *e_(t-1)^2 + beta * sigma_(t-1)^2
-
-# • omega is a positive constant or “baseline” volatility term.
-# • alpha measures how strongly volatility reacts to the magnitude of previous shocks e_(t-1). That
-# shock is often r_(t-1), the return at time t-1, or sometimes (r_(t-1) - mu_(t-1)) if using a mean
-# model.
-# • beta measures how persistently volatility carries forward from one period to the next.
-# • e_(t-1)^2 is the squared residual (or shock) from the previous time step.
-# • sigma_(t-1)^2 is the variance from the previous time step.
-
-# Stationarity requirement: For GARCH(1,1) to remain stable (i.e., not explode to infinite
-# variance), we generally require alpha + beta < 1.
-
-# Interpretation: Intuitively, if a large shock occurred in the previous step (e_(t-1)^2 is large),
-# the model increases the volatility for the current step. Over time, if there are no large shocks,
-# sigma_t^2 decays according to beta until it approaches its long-term mean level implied by omega.
-
-# Capturing volatility clustering: Because GARCH ties the current volatility partly to the previous
-# squared shock, if market returns were volatile recently, the model automatically forecasts higher
-# volatility in subsequent periods, matching the clustered volatility often seen in real markets.
-
-# By extending beyond GARCH(1,1) to include additional lags or other distributions for e_t (e.g.,
-# t-distribution), you can capture more complex volatility patterns. However, GARCH(1,1) remains a
-# popular baseline for modeling volatility in finance due to its simplicity and effectiveness at
-# detecting volatility clustering.
+# Each asset’s returns are:
+# AR(1): Has autocorrelation GARCH(1,1): Time-varying volatility Student-T innovations: Fat tails
+# Partial pooling: Use hyperpriors to share info but allow for idiosyncratic behavior Flexible
+# weighting: Each asset and time has a decay weight (good for non-stationarity)
 
 
-def ar_garch_model_student_t(
-    returns: Optional[torch.Tensor] = None,
-    T: int = 3,
-    prior_predictive_checks: bool = False,
-    device: torch.device = torch.device("cpu"),
-):
-    """
-    AR(1)-GARCH(1,1) model with Student-T innovations, modified to run on CPU or GPU.
+# 2. Model Structure
+# returns: matrix [assets, max_T] of returns (observed, some padding possible)
+# lengths: length for each asset (to mask paddings) You draw a suite of global priors for each
+# parameter family (hierarchical Bayesian) For each asset (possibly mini-batched), draw individual
+# parameters from the global priors ("partial pooling") Each time step, propagate the AR(1)-GARCH
+# state and condition on observations, using temporal and per-asset weights Each asset’s returns are
+# observed with Student-T (allowing fatter tails than Gaussian)
 
-    Parameters
-    ----------
-    returns : torch.Tensor or None
-        Shape [T], containing observed returns. If None, we sample returns from the prior/posterior predictive.
-    T : int
-        Number of time steps to model. If returns is provided, T is overridden by returns.shape[0].
-    prior_predictive_checks : bool
-        If True, observations are set to None (sampling from prior or posterior predictive).
-    device : torch.device
-        The device on which to run the computations (e.g., torch.device("cpu") or torch.device("cuda")).
-    """
+# 3. Global Priors/Hyperpriors
+# omega_mu/sigma: Hyperpriors for GARCH omega (constant term)
+# ab_sum_a/b_hyper: Beta hyperpriors for alpha + beta sum
+# ab_frac_a/b_hyper: Beta hyperpriors for fraction of alpha to alpha + beta
+# phi_mu/sigma: Hyperpriors for AR(1) coefficient ...
+# (same idea for sigma_init and degrees_of_freedom)
+# lambda_decay: Controls time-weighting via exponential decay
+# per time period
 
-    # Move data (if any) to the chosen device
-    if returns is not None:
-        returns = returns.to(device)
-        T = returns.shape[0]
+# 4. Partial pooling (“plate” per asset)
+# A per-asset garch_omega from the global (Normal, clamped > 0)
+# Proper Beta distributed alpha_beta_sum (in (0,1))
+# alpha_frac (in (0,1)), both with hierarchical Beta priors
+# Compose GARCH parameters: garch_alpha = alpha_beta_sum * alpha_frac, garch_beta = alpha_beta_sum *
+# (1-alpha_frac)
+# AR(1) phi per asset, and initial sigma
+# Student-T df, clamped > 2 for validity
+# Per-asset likelihood weight (Beta)
 
-    # Helper to ensure parameters are on the same device
-    def param_tensor(x):
-        return torch.tensor(x, device=device)
+# 5. Recursive State-per-time-point with masks
+# Burn-in first step, else use true recursions for AR-GARCH
+# Compute per-t log-likelihood on the observations
+# Per-asset weights × time-wise decay (exponential in distance from present)
+### Use pyro.factor to add weighted log-likelihood for each time step
+### Masking: Only update loss/state if t < lengths[asset]
+# Sample the latent state (even when observed! This is required by Pyro)
 
-    # 1) GARCH parameters
-    garch_omega = pyro.sample("garch_omega", dist.Exponential(param_tensor(10.0)))
-
-    alpha_beta_sum = pyro.sample("alpha_beta_sum", dist.Beta(param_tensor(9.0), param_tensor(1.0)))
-    alpha_frac = pyro.sample("alpha_frac", dist.Beta(param_tensor(2.0), param_tensor(2.0)))
-    garch_alpha = alpha_beta_sum * alpha_frac
-    garch_beta = alpha_beta_sum * (1.0 - alpha_frac)
-
-    # 2) AR(1) parameter
-    phi = pyro.sample("phi", dist.Normal(param_tensor(0.0), param_tensor(1.0)))
-
-    # 3) Initial volatility
-    sigma_init = pyro.sample("garch_sigma_init", dist.Exponential(param_tensor(10.0)))
-
-    # 4) Degrees of freedom for Student-T (df > 2)
-    df = pyro.sample("degrees_of_freedom", dist.Exponential(param_tensor(1.0))) + param_tensor(2.0)
-
-    # Initialize recursion variables on the correct device
-    sigma_prev = sigma_init
-    e_prev = param_tensor(0.0)
-    r_prev = param_tensor(0.0)
-
-    with pyro.markov():
-        for t in range(T):
-            if t == 0:
-                # No GARCH recursion has been applied yet
-                sigma_t = sigma_init
-                mean_t = param_tensor(0.0)
-            else:
-                # GARCH(1,1) update for sigma_t
-                sigma_t = torch.sqrt(
-                    garch_omega + garch_alpha * (e_prev**2) + garch_beta * (sigma_prev**2)
-                )
-                mean_t = phi * r_prev
-
-            # Either observe (condition) or sample the return
-            obs = None
-            if not prior_predictive_checks and returns is not None:
-                obs = returns[t]
-
-            r_t = pyro.sample(f"r_{t}", dist.StudentT(df, mean_t, sigma_t), obs=obs)
-
-            # Update for the next step
-            e_prev = r_t - mean_t  # e_t
-            sigma_prev = sigma_t
-            r_prev = r_t
+# Model Parameters:  13 + 7 × n_assets
 
 
 def ar_garch_model_student_t_multi_asset_partial_pooling(
@@ -143,9 +79,11 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
     Parallel AR(1)-GARCH(1,1) model with Student-T innovations
     with partial pooling/hierarchical structure for parameters
     (each asset draws its own set of parameters from global hyperpriors).
-    Designed for Pyro JIT & masking. Can handle assets with differing available lengths.
 
-    Other comments as before...
+    Key modification: For (0,1) parameters (such as alpha_beta_sum, alpha_frac),
+    use proper Beta partial pooling, not clamped Normals.
+
+    Designed for Pyro JIT & masking. Can handle assets with differing available lengths.
     """
 
     # Move to correct device
@@ -155,29 +93,32 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
 
     # ------------------- HIERARCHICAL PRIORS (hyperpriors for group/global parameters) --------------------
 
-    # 1) GARCH omega
-    omega_mu = pyro.sample("omega_mu", dist.Exponential(torch.tensor(10.0, device=device)))
-    omega_sigma = pyro.sample("omega_sigma", dist.Exponential(torch.tensor(10.0, device=device)))
+    # 1) GARCH omega (positive, not [0,1])
+    omega_mu = pyro.sample("omega_mu", dist.Exponential(torch.tensor(1.0, device=device)))
+    omega_sigma = pyro.sample("omega_sigma", dist.Exponential(torch.tensor(1.0, device=device)))
 
-    # 2) alpha_beta_sum
-    ab_sum_mu = pyro.sample(
-        "ab_sum_mu", dist.Beta(torch.tensor(9.0, device=device), torch.tensor(1.0, device=device))
+    # 2) alpha_beta_sum ~ Beta(a, b) hierarchy
+    ab_sum_a_hyper = pyro.sample(
+        "ab_sum_a_hyper", dist.Exponential(torch.tensor(2.0, device=device))
     )
-    ab_sum_sigma = pyro.sample("ab_sum_sigma", dist.Exponential(torch.tensor(5.0, device=device)))
-
-    # 3) alpha_frac
-    ab_frac_mu = pyro.sample(
-        "ab_frac_mu", dist.Beta(torch.tensor(2.0, device=device), torch.tensor(2.0, device=device))
+    ab_sum_b_hyper = pyro.sample(
+        "ab_sum_b_hyper", dist.Exponential(torch.tensor(2.0, device=device))
     )
-    ab_frac_sigma = pyro.sample("ab_frac_sigma", dist.Exponential(torch.tensor(5.0, device=device)))
+    # 3) alpha_frac ~ Beta(a, b) hierarchy
+    ab_frac_a_hyper = pyro.sample(
+        "ab_frac_a_hyper", dist.Exponential(torch.tensor(2.0, device=device))
+    )
+    ab_frac_b_hyper = pyro.sample(
+        "ab_frac_b_hyper", dist.Exponential(torch.tensor(2.0, device=device))
+    )
 
-    # 4) AR(1) phi
+    # 4) AR(1) phi (unconstrained)
     phi_mu = pyro.sample(
         "phi_mu", dist.Normal(torch.tensor(0.0, device=device), torch.tensor(1.0, device=device))
     )
     phi_sigma = pyro.sample("phi_sigma", dist.Exponential(torch.tensor(1.0, device=device)))
 
-    # 5) Initial GARCH sigma
+    # 5) Initial GARCH sigma (positive)
     sigma_init_mu = pyro.sample(
         "sigma_init_mu", dist.Exponential(torch.tensor(10.0, device=device))
     )
@@ -189,7 +130,13 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
     df_mu = pyro.sample("df_mu", dist.Exponential(torch.tensor(1.0, device=device)))
     df_sigma = pyro.sample("df_sigma", dist.Exponential(torch.tensor(1.0, device=device)))
 
-    # ---------------------- PER-ASSET PARAMETERS (these are now random, per asset) -------------------------
+    # Global decay parameter for time-weighting - Values in (0,1): how rapidly to forget the past
+    lambda_decay = pyro.sample(
+        "lambda_decay",
+        dist.Beta(torch.tensor(2.0, device=device), torch.tensor(2.0, device=device)),
+    )
+
+    # ---------------------- PER-ASSET PARAMETERS  -------------------------
     with ignore_jit_warnings():
         with pyro.plate("assets", num_assets, batch_size, dim=-2) as batch:
             batch_size_local = batch.shape[0] if batch is not None else num_assets
@@ -198,37 +145,51 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
             asset_returns = returns[batch]  # [batch_size_local, max_T]
 
             # ASSET-SPECIFIC parameters from the group/hyperpriors (partial pooling!)
+
+            # GARCH omega; positive, partial pooling via Normal
             garch_omega = pyro.sample(
                 "garch_omega", dist.Normal(omega_mu, omega_sigma).expand([batch_size_local])
             )
-            garch_omega = garch_omega.clamp(min=1e-4)
+            garch_omega = garch_omega.clamp(min=1e-4)  # safety
 
+            # --- MODIFIED: Proper Beta partial pooling for alpha_beta_sum in (0,1) ---
             alpha_beta_sum = pyro.sample(
-                "alpha_beta_sum", dist.Normal(ab_sum_mu, ab_sum_sigma).expand([batch_size_local])
+                "alpha_beta_sum",
+                dist.Beta(ab_sum_a_hyper, ab_sum_b_hyper).expand([batch_size_local]),
             )
-            alpha_beta_sum = alpha_beta_sum.clamp(min=1e-4, max=1 - 1e-4)
 
+            # --- MODIFIED: Proper Beta partial pooling for alpha_frac in (0,1) ---
             alpha_frac = pyro.sample(
-                "alpha_frac", dist.Normal(ab_frac_mu, ab_frac_sigma).expand([batch_size_local])
+                "alpha_frac", dist.Beta(ab_frac_a_hyper, ab_frac_b_hyper).expand([batch_size_local])
             )
-            alpha_frac = alpha_frac.clamp(min=1e-4, max=1 - 1e-4)
 
+            # reparameterize
             garch_alpha = alpha_beta_sum * alpha_frac
             garch_beta = alpha_beta_sum * (1.0 - alpha_frac)
 
+            # AR(1) phi (no change)
             phi = pyro.sample("phi", dist.Normal(phi_mu, phi_sigma).expand([batch_size_local]))
-            # phi is unconstrained, often fine for AR(1) as long as you keep inference stable
 
+            # Initial GARCH sigma (positive)
             sigma_init = pyro.sample(
                 "garch_sigma_init",
                 dist.Normal(sigma_init_mu, sigma_init_sigma).expand([batch_size_local]),
             )
-            sigma_init = sigma_init.clamp(min=1e-4)
+            sigma_init = sigma_init.clamp(min=1e-4)  # safety
 
+            # Student-T dof (must be >2)
             df = pyro.sample(
                 "degrees_of_freedom", dist.Normal(df_mu, df_sigma).expand([batch_size_local])
             )
             df = df.clamp(min=2.05)
+
+            # Per-asset likelihood weight
+            asset_weight = pyro.sample(
+                "asset_weight",
+                dist.Beta(
+                    torch.tensor(2.0, device=device), torch.tensor(2.0, device=device)
+                ).expand([asset_returns.shape[0]]),
+            )
 
             # Vectorized GARCH/AR recursion
             sigma_prev = sigma_init  # [batch_size_local]
@@ -239,6 +200,7 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
                 range(max_T if getattr(args, "jit", False) else asset_lengths.max().item())
             ):
                 valid_mask = t < asset_lengths  # [batch_size_local]
+                decay_exponent = max_T - t - 1
 
                 if t == 0:
                     sigma_t = sigma_prev
@@ -253,6 +215,24 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
                 if not prior_predictive_checks and asset_returns is not None:
                     obs = asset_returns[:, t]  # [batch_size_local]
 
+                # --- Core: apply both per-asset and temporal weighting ---
+                # Each point's log likelihood is: per-asset weight × decayed by time index
+                if obs is not None:
+                    # Calculate log likelihood "by hand" for control
+                    log_prob = dist.StudentT(df, mean_t, sigma_t).log_prob(
+                        obs
+                    )  # shape [batch_size_local]
+                    # Both per-asset and temporal scaling. Make sure shapes match!
+                    combined_weight = asset_weight * (lambda_decay**decay_exponent)
+                    # Apply mask (valid times only)
+                    weighted_log_prob = torch.where(
+                        valid_mask, combined_weight * log_prob, torch.zeros_like(log_prob)
+                    )
+                    # Use pyro.factor to modify SVI loss accordingly
+                    pyro.factor(f"weighted_decay_{t}", weighted_log_prob)
+                    # Comment: This gives the model flexibility to forget irrelevant *history* and *assets*.
+
+                # Bookkeeping and recursion
                 with poutine.mask(mask=valid_mask):
                     r_t = pyro.sample(f"r_{t}", dist.StudentT(df, mean_t, sigma_t), obs=obs)
 
@@ -268,14 +248,6 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
 
 
 if __name__ == "__main__":
-    pyro.render_model(
-        ar_garch_model_student_t,
-        model_args=(None),
-        filename="ar_garch_model_StudT.jpg",
-        render_params=True,
-        render_distributions=True,
-        # render_deterministic=True,
-    )
 
     # Dummy data with one asset, 3 time steps
     dummy_returns = torch.zeros(1, 3)
