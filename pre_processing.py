@@ -1,3 +1,5 @@
+# pylint: disable=broad-exception-caught
+
 import os
 import numpy as np
 import pandas as pd
@@ -59,64 +61,48 @@ def merge_close_only_csvs(base_dir, merge_dict, output_dir):
     print("All groups processed.")
 
 
-def prepare_daily_returns_tensor(data_path, output_csv_path=None, device=torch.device("cpu")):
-    """
-    Loads CSVs, aligns assets to daily union calendar,
-    computes simple returns (starting at 0), pads NaN for missing,
-    drops rows where all asset returns are NaN, returns tensor for model,
-    and optionally saves to CSV.
+def prepare_daily_returns_true_close(data_path, output_csv_path=None, device=torch.device("cpu")):
 
-    Args:
-        data_path: folder with asset CSVs.
-        output_csv_path: path to save merged returns CSV (optional).
-        device: torch device.
-
-    Returns:
-        asset_names: as list
-        returns_tensor: [assets, days] (float, with NaN)
-        lengths_tensor: [assets] (long)
-        all_dates: pd.DatetimeIndex
-    """
-    # Find files and asset names
     fnames = [f for f in os.listdir(data_path) if f.endswith(".csv")]
     asset_names = [f.replace(".csv", "") for f in fnames]
 
-    # 1. Load and daily-resample each
     dfs = {}
     for fname, asset in zip(fnames, asset_names):
         df = pd.read_csv(os.path.join(data_path, fname), parse_dates=["Datetime"])
         df = df.set_index("Datetime")
-        df_daily = df.resample("1D").last()[["Close"]]
+        # Get only the last observation of each day, with the correct timestamp
+        df["DateOnly"] = df.index.to_series().dt.date
+        df_last = df.groupby("DateOnly").tail(1)
+        df_daily = df_last[["Close"]]
         dfs[asset] = df_daily
 
-    # 2. Full union of all dates
-    all_dates = sorted(set().union(*(df.index for df in dfs.values())))
-    all_dates = pd.DatetimeIndex(all_dates)
+    # Union of all true close timestamps
+    all_close_datetimes = sorted(set().union(*(df.index for df in dfs.values())))
+    all_close_datetimes = pd.DatetimeIndex(all_close_datetimes)
 
-    # 3. Align, calculate returns, pad NaN
+    # Align and calculate returns
     all_returns = []
     for asset in asset_names:
-        df = dfs[asset].reindex(all_dates)
+        df = dfs[asset].reindex(all_close_datetimes)
         close = df["Close"].values
-        ret = np.empty_like(close, dtype="float32")
-        ret[0] = 0
-        ret[1:] = (close[1:] / close[:-1]) - 1
-        missing = np.isnan(close[1:]) | np.isnan(close[:-1])
-        ret[1:][missing] = np.nan
+        ret = np.full_like(close, np.nan, dtype="float32")
+        ret[0] = 0  # First as zero
+        for i in range(1, len(close)):
+            if not np.isnan(close[i]) and not np.isnan(close[i - 1]):
+                ret[i] = (close[i] / close[i - 1]) - 1
+            else:
+                ret[i] = np.nan
         all_returns.append(ret)
 
-    returns_arr = np.stack(all_returns, axis=0)  # [assets, max_T]
-
-    # --- Remove rows (dates) where all asset returns are NaN ---
+    returns_arr = np.stack(all_returns, axis=0)  # [assets, times]
     mask_valid_row = ~np.all(np.isnan(returns_arr), axis=0)
     filtered_returns_arr = returns_arr[:, mask_valid_row]
-    filtered_dates = all_dates[mask_valid_row]
+    filtered_dates = all_close_datetimes[mask_valid_row]
 
     returns_tensor = torch.from_numpy(filtered_returns_arr).to(device)
     n_assets, max_T = returns_tensor.shape
     lengths_tensor = torch.full((n_assets,), max_T, dtype=torch.long, device=device)
 
-    # 4. Optionally save as CSV (dates as first column, columns = assets)
     if output_csv_path is not None:
         out_df = pd.DataFrame(
             np.transpose(filtered_returns_arr), index=filtered_dates, columns=asset_names
@@ -142,4 +128,4 @@ if __name__ == "__main__":
     ############################################################
 
     # 2) Combine the different assets from the output dir
-    prepare_daily_returns_tensor(data_path="assets/", output_csv_path="output/universe.csv")
+    prepare_daily_returns_true_close(data_path="assets/", output_csv_path="output/universe.csv")
