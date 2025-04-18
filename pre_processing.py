@@ -86,7 +86,8 @@ def prepare_daily_returns_true_close(data_path, output_csv_path=None, device=tor
         df = dfs[asset].reindex(all_close_datetimes)
         close = df["Close"].values
         ret = np.full_like(close, np.nan, dtype="float32")
-        ret[0] = 0  # First as zero
+        # no explicit ret[0] = 0; leave as NaN
+        # ret[0] = 0  # First as zero
         for i in range(1, len(close)):
             if not np.isnan(close[i]) and not np.isnan(close[i - 1]):
                 ret[i] = (close[i] / close[i - 1]) - 1
@@ -97,7 +98,7 @@ def prepare_daily_returns_true_close(data_path, output_csv_path=None, device=tor
     returns_arr = np.stack(all_returns, axis=0)  # [assets, times]
     mask_valid_row = ~np.all(np.isnan(returns_arr), axis=0)
     filtered_returns_arr = returns_arr[:, mask_valid_row]
-    filtered_dates = all_close_datetimes[mask_valid_row]
+    filtered_dates = all_close_datetimes[mask_valid_row].date
 
     returns_tensor = torch.from_numpy(filtered_returns_arr).to(device)
     n_assets, max_T = returns_tensor.shape
@@ -128,4 +129,8 @@ if __name__ == "__main__":
     ############################################################
 
     # 2) Combine the different assets from the output dir
-    prepare_daily_returns_true_close(data_path="assets/", output_csv_path="output/universe.csv")
+    _, _, _, filtered_dates = prepare_daily_returns_true_close(
+        data_path="assets/", output_csv_path="output/universe.csv"
+    )
+
+    print(filtered_dates)
