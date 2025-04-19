@@ -5,16 +5,15 @@ import torch
 
 
 def guide(
-    returns,              # [num_assets, max_T]
-    lengths,              # [num_assets]
+    returns,              # [batch_size, max_T]
+    lengths,              # [batch_size]
     args,                 # Dummy, just for API compatibility
     prior_predictive_checks: bool = False,
     device=torch.device("cpu"),
-    batch_size=None
 ):
     returns = returns.to(device)
     lengths = lengths.to(device)
-    num_assets, max_T = returns.shape
+    batch_size, max_T = returns.shape
 
     # ---- MEAN-FIELD FOR GLOBALS ----------
     # Each uses unconstrained loc/scale for variational params
@@ -73,27 +72,17 @@ def guide(
     # ---- STRUCTURED MULTIVARIATE FOR LOCALS (PER ASSET) --------
     # Block: per asset, ALL local params enter a single multivariate Normal
     per_asset_param_dim = 8
-    # Order: garch_omega, alpha_beta_sum, alpha_frac, phi, garch_sigma_init, degrees_of_freedom, asset_weight, (possible npad for alignment)
-    with pyro.plate("assets", num_assets, dim=-2):
-        loc = pyro.param("local_loc", torch.zeros(num_assets, per_asset_param_dim, device=device))
-        scale_tril = pyro.param(
-            "local_scale_tril",
-            torch.stack([torch.eye(per_asset_param_dim, device=device) for _ in range(num_assets)]), 
-            constraint=dist.constraints.lower_cholesky
-        )
+    # Variational parameters are registered globally for all assets
+    loc = pyro.param("local_loc")           # shape: [num_assets, per_asset_param_dim]
+    scale_tril = pyro.param(
+        "local_scale_tril"
+    )                                       # shape: [num_assets, per_asset_param_dim, per_asset_param_dim]
+
+    # Sample only the part of "loc" and "scale_tril" for the current batch
+    with pyro.plate("assets", batch_size, dim=-2):
+        local_loc = loc[:batch_size, :]                      # Slice the first batch_size assets for current batch
+        local_scale_tril = scale_tril[:batch_size, :, :]     # Same here
         local_latents = pyro.sample(
             "local_latents",
-            dist.MultivariateNormal(loc, scale_tril=scale_tril).to_event(1)
+            dist.MultivariateNormal(local_loc, scale_tril=local_scale_tril).to_event(1)
         )
-
-    # You will then decode each latent vector into its respective parameter:
-    #  garch_omega_i = local_latents[:, 0]
-    #  alpha_beta_sum_i = local_latents[:, 1]
-    #  alpha_frac_i = local_latents[:, 2]
-    #  phi_i = local_latents[:, 3]
-    #  garch_sigma_init_i = local_latents[:, 4]
-    #  degrees_of_freedom_i = local_latents[:, 5]
-    #  asset_weight_i = local_latents[:, 6]
-    #  [Slot 7 may be left as npad/unused or you can add another parameter]
-
-    # If obs masking or batch mode is needed adjust accordingly.

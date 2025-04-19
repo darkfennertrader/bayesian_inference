@@ -68,12 +68,11 @@ from pyro.util import ignore_jit_warnings
 
 
 def ar_garch_model_student_t_multi_asset_partial_pooling(
-    returns,  # shape [batch_size, max_T]
-    lengths,  # shape [batch_size,] giving lengths per asset
+    returns,
+    lengths,
     args,  # expects args.jit, and other control flags/settings
     prior_predictive_checks: bool = False,
-    device: torch.device = torch.device("cpu"),
-    batch_size=None,  # support for mini-batched learning
+    device: torch.device = torch.device("cpu")
 ):
     """
     Parallel AR(1)-GARCH(1,1) model with Student-T innovations
@@ -89,7 +88,7 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
     # Move to correct device
     returns = returns.to(device)
     lengths = lengths.to(device)
-    num_assets, max_T = returns.shape
+    batch_size, max_T = returns.shape
 
     # ------------------- HIERARCHICAL PRIORS (hyperpriors for group/global parameters) --------------------
 
@@ -138,29 +137,27 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
 
     # ---------------------- PER-ASSET PARAMETERS  -------------------------
     with ignore_jit_warnings():
-        with pyro.plate("assets", num_assets, batch_size, dim=-2) as batch:
-            batch_size_local = batch.shape[0] if batch is not None else num_assets
-
-            asset_lengths = lengths[batch]  # [batch_size_local]
-            asset_returns = returns[batch]  # [batch_size_local, max_T]
+        with pyro.plate("assets", batch_size, batch_size, dim=-2) as batch:
+            asset_lengths = lengths  # already pre-selected [batch_size]
+            asset_returns = returns  # already pre-selected [batch_size, max_T]
 
             # ASSET-SPECIFIC parameters from the group/hyperpriors (partial pooling!)
 
             # GARCH omega; positive, partial pooling via Normal
             garch_omega = pyro.sample(
-                "garch_omega", dist.Normal(omega_mu, omega_sigma).expand([batch_size_local])
+                "garch_omega", dist.Normal(omega_mu, omega_sigma).expand([batch_size])
             )
             garch_omega = garch_omega.clamp(min=1e-4)  # safety
 
             # --- MODIFIED: Proper Beta partial pooling for alpha_beta_sum in (0,1) ---
             alpha_beta_sum = pyro.sample(
                 "alpha_beta_sum",
-                dist.Beta(ab_sum_a_hyper, ab_sum_b_hyper).expand([batch_size_local]),
+                dist.Beta(ab_sum_a_hyper, ab_sum_b_hyper).expand([batch_size]),
             )
 
             # --- MODIFIED: Proper Beta partial pooling for alpha_frac in (0,1) ---
             alpha_frac = pyro.sample(
-                "alpha_frac", dist.Beta(ab_frac_a_hyper, ab_frac_b_hyper).expand([batch_size_local])
+                "alpha_frac", dist.Beta(ab_frac_a_hyper, ab_frac_b_hyper).expand([batch_size])
             )
 
             # reparameterize
@@ -168,18 +165,18 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
             garch_beta = alpha_beta_sum * (1.0 - alpha_frac)
 
             # AR(1) phi (no change)
-            phi = pyro.sample("phi", dist.Normal(phi_mu, phi_sigma).expand([batch_size_local]))
+            phi = pyro.sample("phi", dist.Normal(phi_mu, phi_sigma).expand([batch_size]))
 
             # Initial GARCH sigma (positive)
             sigma_init = pyro.sample(
                 "garch_sigma_init",
-                dist.Normal(sigma_init_mu, sigma_init_sigma).expand([batch_size_local]),
+                dist.Normal(sigma_init_mu, sigma_init_sigma).expand([batch_size]),
             )
             sigma_init = sigma_init.clamp(min=1e-4)  # safety
 
             # Student-T dof (must be >2)
             df = pyro.sample(
-                "degrees_of_freedom", dist.Normal(df_mu, df_sigma).expand([batch_size_local])
+                "degrees_of_freedom", dist.Normal(df_mu, df_sigma).expand([batch_size])
             )
             df = df.clamp(min=2.05)
 
@@ -193,8 +190,8 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
 
             # Vectorized GARCH/AR recursion
             sigma_prev = sigma_init  # [batch_size_local]
-            e_prev = torch.zeros(batch_size_local, device=device)
-            r_prev = torch.zeros(batch_size_local, device=device)
+            e_prev = torch.zeros(batch_size, device=device)
+            r_prev = torch.zeros(batch_size, device=device)
 
             for t in pyro.markov(
                 range(max_T if getattr(args, "jit", False) else asset_lengths.max().item())
