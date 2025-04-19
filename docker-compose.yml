@@ -1,7 +1,0 @@
-services:
-  data_processor:
-    build: .
-    volumes:
-      - ./data:/app/data
-      - ./output:/app/output
-    command: ["data/overall_hourly_close.csv", "data/stationary_returns.csv", "eur-usd"]
