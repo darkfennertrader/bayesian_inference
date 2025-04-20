@@ -8,7 +8,7 @@ from pyro.optim import Adam  #  type: ignore
 import matplotlib.pyplot as plt
 import seaborn as sns
 from ar_garch_model import ar_garch_model_student_t_multi_asset_partial_pooling
-from ar_garch_guide import guide
+from ar_garch_guide import ar_garch_guide_student_t_multi_asset_partial_pooling
 
 num_assets = 52
 per_asset_param_dim = 7  # << Only defined here, shared by model/guide
@@ -39,9 +39,9 @@ pyro.param(
 optimizer = Adam({"lr": 1e-3})
 svi = SVI(
     ar_garch_model_student_t_multi_asset_partial_pooling,
-    guide,
+    ar_garch_guide_student_t_multi_asset_partial_pooling,
     optimizer,
-    loss=Trace_ELBO(),
+    loss=JitTrace_ELBO(),
 )
 
 
@@ -57,8 +57,19 @@ def run_svi_minibatch(
 ):
     num_assets = returns.shape[0]
     num_batches = (num_assets + batch_size - 1) // batch_size  # ceil division
+
+    # --- JIT WARMUP! ---
+    print("Running JIT warmup...")
+    svi.guide(
+        returns[:batch_size],
+        lengths[:batch_size],
+        args=args,
+        prior_predictive_checks=prior_predictive_checks,
+        device=device,
+    )
+
     for epoch in range(num_epochs):
-        perm = torch.randperm(num_assets)  # always on CPU by default
+        perm = torch.randperm(num_assets)
         epoch_loss = 0.0
         for batch_idx in range(num_batches):
             start = batch_idx * batch_size
@@ -69,7 +80,7 @@ def run_svi_minibatch(
             loss = svi.step(
                 batch_returns,
                 batch_lengths,
-                args,
+                args=args,
                 prior_predictive_checks=prior_predictive_checks,
                 device=device,
             )
@@ -77,7 +88,7 @@ def run_svi_minibatch(
         print(f"Epoch {epoch + 1} - Loss: {epoch_loss:.3f}")
 
 
-print("Training SVI minibatch model...")
+print("Training SVI minibatch model (JIT ready)...")
 run_svi_minibatch(
     svi,
     returns,

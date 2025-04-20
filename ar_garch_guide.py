@@ -8,17 +8,16 @@ import pyro.distributions as dist
 from pyro.distributions import constraints
 
 
-def guide(
-    returns,
-    lengths,
-    args,
-    prior_predictive_checks: bool = False,
-    device: torch.device = torch.device("cpu"),
+def ar_garch_guide_student_t_multi_asset_partial_pooling(
+    returns, lengths, **kwargs
 ):
     """
     Guide: strict parameter packing as in model.
     Transform local_params for correct support!
     """
+    args = kwargs.get("args", {})
+    prior_predictive_checks = kwargs.get("prior_predictive_checks", False)
+    device = kwargs.get("device", torch.device("cpu"))
     num_assets = returns.shape[0]
     per_asset_param_dim = 7
 
@@ -178,7 +177,7 @@ if __name__ == "__main__":
     print("Rendering GUIDE structure...")
 
     pyro.render_model(
-        guide,
+        ar_garch_guide_student_t_multi_asset_partial_pooling,
         model_args=(dummy_returns, dummy_lengths, args),
         filename="ar_garch_StudT_multiassets_partialpool_guide.jpg",
         render_params=True,

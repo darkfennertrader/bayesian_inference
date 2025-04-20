@@ -18,11 +18,7 @@ from pyro.util import ignore_jit_warnings
 
 
 def ar_garch_model_student_t_multi_asset_partial_pooling(
-    returns,
-    lengths,
-    args,
-    prior_predictive_checks: bool = False,
-    device: torch.device = torch.device("cpu"),
+    returns, lengths, **kwargs
 ):
     """
     Parallel AR(1)-GARCH(1,1) model with Student-T innovations and per-asset partial-pooling.
@@ -35,6 +31,10 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
       5: degrees_of_freedom (>2, LogNormal + 2)
       6: asset_weight (Beta)
     """
+    args = kwargs.get("args", {})
+    prior_predictive_checks = kwargs.get("prior_predictive_checks", False)
+    device = kwargs.get("device", torch.device("cpu"))
+
     returns = returns.to(device)
     lengths = lengths.to(device)
     batch_size, max_T = returns.shape
