@@ -12,16 +12,15 @@ def ar_garch_guide_student_t_multi_asset_partial_pooling(
     returns, lengths, **kwargs
 ):
     """
-    Guide: strict parameter packing as in model.
-    Transform local_params for correct support!
+    Hierarchical full-covariance guide:
+    - Each asset's latent vector mean is shrunk toward a global latent mean.
+    - All assets share a global full-covariance.
     """
-    args = kwargs.get("args", {})
-    prior_predictive_checks = kwargs.get("prior_predictive_checks", False)
     device = kwargs.get("device", torch.device("cpu"))
     num_assets = returns.shape[0]
-    per_asset_param_dim = 7
+    param_dim = 7
 
-    # ==== GLOBALS: lognormals, beta ====
+    # ==== GLOBAL HYPERPRIORS (unchanged, copy-paste as in your setup) ====
     pyro.sample(
         "omega_mu",
         dist.LogNormal(
@@ -100,26 +99,47 @@ def ar_garch_guide_student_t_multi_asset_partial_pooling(
         ),
     )
 
-    # ==== LOCAL FULL-COVARIANCE MVN ====
-    local_loc = pyro.param("local_loc")  # [num_assets, 7]
-    local_scale_tril = pyro.param(
-        "local_scale_tril"
-    )  # [num_assets, 7, 7], lower-triangular
+    # ==== HIERARCHICAL LOCAL PARAMETERS ====
+    # Global latent mean and covariance for all assets
+    global_loc = pyro.param("global_loc", torch.zeros(param_dim, device=device))
+    global_scale_tril = pyro.param(
+        "global_scale_tril",
+        torch.eye(param_dim, device=device),
+        constraint=constraints.lower_cholesky,
+    )
+
+    # Asset-specific offsets (mean-reverting to global mean)
+    local_offset = pyro.param(
+        "local_offset", torch.zeros(num_assets, param_dim, device=device)
+    )
+    local_loc = global_loc + local_offset
+
     with pyro.plate("assets", num_assets):
         zs = pyro.sample(
-            "local_params",
-            dist.MultivariateNormal(local_loc, scale_tril=local_scale_tril),
+            "local_packed",
+            dist.MultivariateNormal(local_loc, scale_tril=global_scale_tril),
         )
+        # Unpack each variable for explicit guide matching:
+        garch_omega_val = torch.exp(zs[..., 0])  # positive
+        alpha_beta_sum_val = torch.sigmoid(zs[..., 1])  # (0,1)
+        alpha_frac_val = torch.sigmoid(zs[..., 2])  # (0,1)
+        phi_val = zs[..., 3]  # real
+        garch_sigma_init_val = torch.exp(zs[..., 4])  # positive
+        degrees_of_freedom_raw_val = torch.exp(
+            zs[..., 5]
+        )  # positive, model adds 2
+        asset_weight_val = torch.sigmoid(zs[..., 6])  # (0,1)
 
-        # UNPACK GUIDE VECTOR FOR MODEL SUPPORT:
-        garch_omega = torch.exp(zs[..., 0])  # positive
-        alpha_beta_sum = torch.sigmoid(zs[..., 1])  # in (0,1)
-        alpha_frac = torch.sigmoid(zs[..., 2])  # in (0,1)
-        phi = zs[..., 3]  # real
-        garch_sigma_init = torch.exp(zs[..., 4])  # positive
-        degrees_of_freedom = 2.0 + softplus(zs[..., 5])  # >2
-        asset_weight = torch.sigmoid(zs[..., 6])  # in (0,1)
-        # These would be "repacked" as needed for downstream deterministic guides/amortized use.
+        # Explicitly sample each with same name as model (using Delta to avoid warnings)
+        pyro.sample("garch_omega", dist.Delta(garch_omega_val))
+        pyro.sample("alpha_beta_sum", dist.Delta(alpha_beta_sum_val))
+        pyro.sample("alpha_frac", dist.Delta(alpha_frac_val))
+        pyro.sample("phi", dist.Delta(phi_val))
+        pyro.sample("garch_sigma_init", dist.Delta(garch_sigma_init_val))
+        pyro.sample(
+            "degrees_of_freedom_raw", dist.Delta(degrees_of_freedom_raw_val)
+        )
+        pyro.sample("asset_weight", dist.Delta(asset_weight_val))
 
 
 if __name__ == "__main__":
@@ -178,7 +198,8 @@ if __name__ == "__main__":
 
     pyro.render_model(
         ar_garch_guide_student_t_multi_asset_partial_pooling,
-        model_args=(dummy_returns, dummy_lengths, args),
+        model_args=(dummy_returns, dummy_lengths),
+        model_kwargs={"args": args},
         filename="ar_garch_StudT_multiassets_partialpool_guide.jpg",
         render_params=True,
         render_distributions=True,

@@ -15,6 +15,7 @@ from pyro.optim import Adam  # pylint: disable=no-name-in-module # type: ignore
 from pyro.ops.indexing import Vindex
 import pyro.poutine as poutine
 from pyro.util import ignore_jit_warnings
+from helpers import debug_shape
 
 
 def ar_garch_model_student_t_multi_asset_partial_pooling(
@@ -39,20 +40,39 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
     lengths = lengths.to(device)
     batch_size, max_T = returns.shape
 
+    debug_shape("returns", returns)
+    debug_shape("lengths", lengths)
+
     # ==== GLOBAL HYPERPRIORS ====
-    omega_mu = pyro.sample("omega_mu", dist.LogNormal(0.0, 1.0))
-    omega_sigma = pyro.sample("omega_sigma", dist.LogNormal(0.0, 0.5))
-    ab_sum_a_hyper = pyro.sample("ab_sum_a_hyper", dist.LogNormal(0.5, 0.5))
-    ab_sum_b_hyper = pyro.sample("ab_sum_b_hyper", dist.LogNormal(0.5, 0.5))
-    ab_frac_a_hyper = pyro.sample("ab_frac_a_hyper", dist.LogNormal(0.5, 0.5))
-    ab_frac_b_hyper = pyro.sample("ab_frac_b_hyper", dist.LogNormal(0.5, 0.5))
-    phi_mu = pyro.sample("phi_mu", dist.Normal(0.0, 1.0))
-    phi_sigma = pyro.sample("phi_sigma", dist.LogNormal(0.0, 0.5))
-    sigma_init_mu = pyro.sample("sigma_init_mu", dist.LogNormal(2.0, 0.5))
-    sigma_init_sigma = pyro.sample("sigma_init_sigma", dist.LogNormal(0.0, 0.5))
-    df_mu = pyro.sample("df_mu", dist.LogNormal(1.0, 0.5))
-    df_sigma = pyro.sample("df_sigma", dist.LogNormal(0.0, 0.5))
-    lambda_decay = pyro.sample("lambda_decay", dist.Beta(2.0, 2.0))
+    omega_mu = pyro.sample("omega_mu", dist.LogNormal(0.0, 1.0)).to(device)
+    omega_sigma = pyro.sample("omega_sigma", dist.LogNormal(0.0, 0.5)).to(
+        device
+    )
+    ab_sum_a_hyper = pyro.sample("ab_sum_a_hyper", dist.LogNormal(0.5, 0.5)).to(
+        device
+    )
+    ab_sum_b_hyper = pyro.sample("ab_sum_b_hyper", dist.LogNormal(0.5, 0.5)).to(
+        device
+    )
+    ab_frac_a_hyper = pyro.sample(
+        "ab_frac_a_hyper", dist.LogNormal(0.5, 0.5)
+    ).to(device)
+    ab_frac_b_hyper = pyro.sample(
+        "ab_frac_b_hyper", dist.LogNormal(0.5, 0.5)
+    ).to(device)
+    phi_mu = pyro.sample("phi_mu", dist.Normal(0.0, 1.0)).to(device)
+    phi_sigma = pyro.sample("phi_sigma", dist.LogNormal(0.0, 0.5)).to(device)
+    sigma_init_mu = pyro.sample("sigma_init_mu", dist.LogNormal(2.0, 0.5)).to(
+        device
+    )
+    sigma_init_sigma = pyro.sample(
+        "sigma_init_sigma", dist.LogNormal(0.0, 0.5)
+    ).to(device)
+    df_mu = pyro.sample("df_mu", dist.LogNormal(1.0, 0.5)).to(device)
+    df_sigma = pyro.sample("df_sigma", dist.LogNormal(0.0, 0.5)).to(device)
+    lambda_decay = pyro.sample("lambda_decay", dist.Beta(2.0, 2.0)).to(device)
+
+    debug_shape("ab_frac_a_hyper", ab_frac_a_hyper)
 
     # ==== ASSET-SPECIFIC PARAMETERS ====
     with pyro.plate("assets", batch_size, dim=-2):
@@ -73,7 +93,9 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
             "degrees_of_freedom_raw", dist.LogNormal(df_mu, df_sigma)
         )
         degrees_of_freedom = raw_df + 2.0
-        asset_weight = pyro.sample("asset_weight", dist.Beta(2.0, 2.0))
+        asset_weight = pyro.sample("asset_weight", dist.Beta(2.0, 2.0)).to(
+            device
+        )
 
         sigma_prev = garch_sigma_init
         e_prev = torch.zeros(batch_size, device=device)
@@ -145,7 +167,8 @@ if __name__ == "__main__":
 
     pyro.render_model(
         ar_garch_model_student_t_multi_asset_partial_pooling,
-        model_args=(dummy_returns, dummy_lengths, args),
+        model_args=(dummy_returns, dummy_lengths),
+        model_kwargs={"args": args},
         filename="ar_garch_StudT_multiassets_partialpool.jpg",
         render_params=True,
         render_distributions=True,
