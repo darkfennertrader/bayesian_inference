@@ -17,8 +17,22 @@ def ar_garch_guide_student_t_multi_asset_partial_pooling(
     - All assets share a global full-covariance.
     """
     device = kwargs.get("device", torch.device("cpu"))
-    num_assets = returns.shape[0]
+    ############################################################################
+    print(
+        "GUIDE() DEBUG: device arg:", device, "returns.device:", returns.device
+    )
+    ############################################################################
+
+    indices = kwargs.get("indices", None)
+    assert indices is not None, "Indices must be passed to the guide!"
+    batch_size, _ = returns.shape
     param_dim = 7
+
+    #########################################################################
+    print(
+        "GUIDE() | returns.shape:", returns.shape, "| batch_size:", batch_size
+    )
+    #########################################################################
 
     # ==== GLOBAL HYPERPRIORS (unchanged, copy-paste as in your setup) ====
     pyro.sample(
@@ -109,16 +123,48 @@ def ar_garch_guide_student_t_multi_asset_partial_pooling(
     )
 
     # Asset-specific offsets (mean-reverting to global mean)
-    local_offset = pyro.param(
-        "local_offset", torch.zeros(num_assets, param_dim, device=device)
+    # local_offset_all is shape [num_assets, param_dim]
+    n = indices.shape[0] if isinstance(indices, torch.Tensor) else 1
+    local_offset_all = pyro.param(
+        "local_offset",
+        torch.zeros(n, param_dim, device=device),
     )
-    local_loc = global_loc + local_offset
+    # Select only those in current batch:
+    local_offset = local_offset_all[indices]  # [batch_size, param_dim]
+    local_loc = global_loc + local_offset  # [batch_size, param_dim]
+    ###################################################################
+    print(
+        "GUIDE() DEBUG: local_offset.shape",
+        local_offset.shape,
+        "local_offset.device",
+        local_offset.device,
+        "local_loc.device",
+        local_loc.device,
+    )
+    ###################################################################
 
-    with pyro.plate("assets", num_assets):
+    ##############################################################################
+    print("GUIDE() | about to enter assets plate, batch_size =", batch_size)
+    print(
+        "GUIDE() DEBUG: batching local_loc.device",
+        local_loc.device,
+        "global_scale_tril.device",
+        global_scale_tril.device,
+    )
+    ##############################################################################
+
+    with pyro.plate("assets", batch_size, dim=-2, device=device):
         zs = pyro.sample(
             "local_packed",
             dist.MultivariateNormal(local_loc, scale_tril=global_scale_tril),
+            infer={"is_auxiliary": True},
         )
+        #####################################################################
+        print(
+            "GUIDE() | zs.shape (local_packed):", zs.shape, zs.device, zs.device
+        )
+        ####################################################################
+
         # Unpack each variable for explicit guide matching:
         garch_omega_val = torch.exp(zs[..., 0])  # positive
         alpha_beta_sum_val = torch.sigmoid(zs[..., 1])  # (0,1)
@@ -130,6 +176,24 @@ def ar_garch_guide_student_t_multi_asset_partial_pooling(
         )  # positive, model adds 2
         asset_weight_val = torch.sigmoid(zs[..., 6])  # (0,1)
 
+        ###################################################################
+        print(
+            "GUIDE() DEBUG:",
+            [
+                (name, p.device)
+                for name, p in [
+                    ("garch_omega_val", garch_omega_val),
+                    ("alpha_beta_sum_val", alpha_beta_sum_val),
+                    ("alpha_frac_val", alpha_frac_val),
+                    ("phi_val", phi_val),
+                    ("garch_sigma_init_val", garch_sigma_init_val),
+                    ("degrees_of_freedom_raw_val", degrees_of_freedom_raw_val),
+                    ("asset_weight_val", asset_weight_val),
+                ]
+            ],
+        )
+        ###################################################################
+
         # Explicitly sample each with same name as model (using Delta to avoid warnings)
         pyro.sample("garch_omega", dist.Delta(garch_omega_val))
         pyro.sample("alpha_beta_sum", dist.Delta(alpha_beta_sum_val))
@@ -140,6 +204,32 @@ def ar_garch_guide_student_t_multi_asset_partial_pooling(
             "degrees_of_freedom_raw", dist.Delta(degrees_of_freedom_raw_val)
         )
         pyro.sample("asset_weight", dist.Delta(asset_weight_val))
+
+        #######################################################################
+        print(
+            f"GUIDE() | garch_omega_val.shape:{garch_omega_val.shape}, device:{garch_omega_val.device}"
+        )
+        print(
+            f"GUIDE() | alpha_beta_sum_val.shape:{alpha_beta_sum_val.shape}, device:{alpha_beta_sum_val.device}"
+        )
+        print(
+            f"GUIDE() | alpha_frac_val.shape:{alpha_frac_val.shape}, , device:{alpha_frac_val.device}"
+        )
+        print(
+            f"GUIDE() | phi_val.shape:{phi_val.shape}, device:{phi_val.device}"
+        )
+        print(
+            f"GUIDE() | garch_sigma_init_val.shape:{garch_sigma_init_val.shape}, device:{garch_sigma_init_val.device}"
+        )
+        print(
+            f"GUIDE() | degrees_of_freedom_raw_val.shape:{degrees_of_freedom_raw_val.shape}, device:{degrees_of_freedom_raw_val.device}"
+        )
+        print(
+            f"GUIDE() | asset_weight_val.shape:{asset_weight_val.shape}, device:{asset_weight_val.device}"
+        )
+
+
+##########################################################################
 
 
 if __name__ == "__main__":
