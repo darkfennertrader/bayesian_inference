@@ -8,8 +8,8 @@ from pyro.infer import SVI, TraceEnum_ELBO, Trace_ELBO, JitTrace_ELBO
 from pyro.optim import Adam  #  type: ignore
 import matplotlib.pyplot as plt
 import seaborn as sns
-from ar_garch_model import ar_garch_model_student_t_multi_asset_partial_pooling
-from ar_garch_guide import ar_garch_guide_student_t_multi_asset_partial_pooling
+from pyro_model import ar_garch_model_student_t_multi_asset_partial_pooling
+from pyro_guide import ar_garch_guide_student_t_multi_asset_partial_pooling
 from helpers import debug_shape
 
 
@@ -65,7 +65,7 @@ class RegularSVIStrategy(SVIStrategy):
 
 # ----- SVI Engine -----
 class AR_GARCH_SVIEngine:
-    def __init__(self, model, guide, num_assets, param_dim, device):
+    def __init__(self, model, guide, num_assets, param_dim, max_T, device):
         self.model = model
         self.guide = guide
         self.num_assets = num_assets
@@ -74,6 +74,7 @@ class AR_GARCH_SVIEngine:
         self.optimizer = Adam({"lr": 1e-3})
         self.jit_strategy = None
         self.regular_strategy = None
+        self.max_T = max_T
         self.global_param_specs = [
             ("omega_mu_loc", 0.0, None),
             ("omega_mu_scale", 1.0, constraints.positive),
@@ -143,10 +144,16 @@ class AR_GARCH_SVIEngine:
 
     def prepare_strategies(self, batch_size):
         self.jit_strategy = JITSVIStrategy(
-            self.model, self.guide, self.optimizer, batch_size, self.device
+            lambda *a, **kw: self.model(*a, **kw, max_T=self.max_T),
+            lambda *a, **kw: self.guide(*a, **kw, max_T=self.max_T),
+            self.optimizer,
+            batch_size,
+            self.device,
         )
         self.regular_strategy = RegularSVIStrategy(
-            self.model, self.guide, self.optimizer
+            lambda *a, **kw: self.model(*a, **kw, max_T=self.max_T),
+            lambda *a, **kw: self.guide(*a, **kw, max_T=self.max_T),
+            self.optimizer,
         )
 
     def run(
@@ -174,6 +181,7 @@ class AR_GARCH_SVIEngine:
                 start = batch_idx * batch_size
                 end = min(start + batch_size, num_assets)
                 indices = perm[start:end].to(device=self.device)
+                print(indices, "type:", type(indices))
                 batch_returns = returns[indices]
                 batch_lengths = lengths[indices]
                 current_batch_size = batch_returns.shape[0]
@@ -260,6 +268,7 @@ if __name__ == "__main__":
         ar_garch_guide_student_t_multi_asset_partial_pooling,
         num_assets,
         param_dim,
+        max_T,
         device,
     )
     engine.run(returns, lengths, num_epochs=num_epochs, batch_size=batch_size)

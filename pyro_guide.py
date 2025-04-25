@@ -17,10 +17,10 @@ def ar_garch_guide_student_t_multi_asset_partial_pooling(
     - All assets share a global full-covariance.
     """
     device = kwargs.get("device", torch.device("cpu"))
+    max_T = kwargs.get("max_T", None)
+    assert max_T is not None, "max_T must be passed to the guide!"
     ############################################################################
-    print(
-        "GUIDE() DEBUG: device arg:", device, "returns.device:", returns.device
-    )
+    print("GUIDE | device arg:", device, "returns.device:", returns.device)
     ############################################################################
 
     indices = kwargs.get("indices", None)
@@ -29,9 +29,7 @@ def ar_garch_guide_student_t_multi_asset_partial_pooling(
     param_dim = 7
 
     #########################################################################
-    print(
-        "GUIDE() | returns.shape:", returns.shape, "| batch_size:", batch_size
-    )
+    print("GUIDE | returns.shape:", returns.shape, "| batch_size:", batch_size)
     #########################################################################
 
     # ==== GLOBAL HYPERPRIORS (unchanged, copy-paste as in your setup) ====
@@ -134,7 +132,7 @@ def ar_garch_guide_student_t_multi_asset_partial_pooling(
     local_loc = global_loc + local_offset  # [batch_size, param_dim]
     ###################################################################
     print(
-        "GUIDE() DEBUG: local_offset.shape",
+        "GUIDE | local_offset.shape",
         local_offset.shape,
         "local_offset.device",
         local_offset.device,
@@ -144,9 +142,9 @@ def ar_garch_guide_student_t_multi_asset_partial_pooling(
     ###################################################################
 
     ##############################################################################
-    print("GUIDE() | about to enter assets plate, batch_size =", batch_size)
+    print("GUIDE | about to enter assets plate, batch_size =", batch_size)
     print(
-        "GUIDE() DEBUG: batching local_loc.device",
+        "GUIDE | batching local_loc.device",
         local_loc.device,
         "global_scale_tril.device",
         global_scale_tril.device,
@@ -161,7 +159,7 @@ def ar_garch_guide_student_t_multi_asset_partial_pooling(
         )
         #####################################################################
         print(
-            "GUIDE() | zs.shape (local_packed):", zs.shape, zs.device, zs.device
+            "GUIDE | zs.shape (local_packed):", zs.shape, zs.device, zs.device
         )
         ####################################################################
 
@@ -178,7 +176,7 @@ def ar_garch_guide_student_t_multi_asset_partial_pooling(
 
         ###################################################################
         print(
-            "GUIDE() DEBUG:",
+            "GUIDE |",
             [
                 (name, p.device)
                 for name, p in [
@@ -207,25 +205,23 @@ def ar_garch_guide_student_t_multi_asset_partial_pooling(
 
         #######################################################################
         print(
-            f"GUIDE() | garch_omega_val.shape:{garch_omega_val.shape}, device:{garch_omega_val.device}"
+            f"GUIDE | garch_omega_val.shape:{garch_omega_val.shape}, device:{garch_omega_val.device}"
         )
         print(
-            f"GUIDE() | alpha_beta_sum_val.shape:{alpha_beta_sum_val.shape}, device:{alpha_beta_sum_val.device}"
+            f"GUIDE | alpha_beta_sum_val.shape:{alpha_beta_sum_val.shape}, device:{alpha_beta_sum_val.device}"
         )
         print(
-            f"GUIDE() | alpha_frac_val.shape:{alpha_frac_val.shape}, , device:{alpha_frac_val.device}"
+            f"GUIDE | alpha_frac_val.shape:{alpha_frac_val.shape}, , device:{alpha_frac_val.device}"
+        )
+        print(f"GUIDE | phi_val.shape:{phi_val.shape}, device:{phi_val.device}")
+        print(
+            f"GUIDE | garch_sigma_init_val.shape:{garch_sigma_init_val.shape}, device:{garch_sigma_init_val.device}"
         )
         print(
-            f"GUIDE() | phi_val.shape:{phi_val.shape}, device:{phi_val.device}"
+            f"GUIDE | degrees_of_freedom_raw_val.shape:{degrees_of_freedom_raw_val.shape}, device:{degrees_of_freedom_raw_val.device}"
         )
         print(
-            f"GUIDE() | garch_sigma_init_val.shape:{garch_sigma_init_val.shape}, device:{garch_sigma_init_val.device}"
-        )
-        print(
-            f"GUIDE() | degrees_of_freedom_raw_val.shape:{degrees_of_freedom_raw_val.shape}, device:{degrees_of_freedom_raw_val.device}"
-        )
-        print(
-            f"GUIDE() | asset_weight_val.shape:{asset_weight_val.shape}, device:{asset_weight_val.device}"
+            f"GUIDE | asset_weight_val.shape:{asset_weight_val.shape}, device:{asset_weight_val.device}"
         )
 
 

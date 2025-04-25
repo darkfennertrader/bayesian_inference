@@ -36,27 +36,29 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
     prior_predictive_checks = kwargs.get("prior_predictive_checks", False)
     device = kwargs.get("device", torch.device("cpu"))
     indices = kwargs.get("indices", None)
-    assert indices is not None, "Indices must be passed to the guide!"
+    assert indices is not None, "Indices must be passed to the model!"
 
     returns = returns.to(device)
     lengths = lengths.to(device)
     ################################################################
     print(
-        f"MODEL() DEBUG: returns.device: {returns.device}, lengths.device: {lengths.device}, device set: {device}"
+        f"MODEL | returns.device: {returns.device}, lengths.device: {lengths.device}, device set: {device}"
     )
     ###############################################################
 
-    batch_size, max_T = returns.shape
+    batch_size = returns.shape[0]
+    max_T = kwargs.get("max_T", None)
+    assert indices is not None, "max_T must be passed to the model!"
 
     ################################################################
     print(
-        "MODEL() | returns.shape:",
+        "MODEL | returns.shape:",
         returns.shape,
         "| lengths.shape:",
         lengths.shape,
         "| batch_size:",
         batch_size,
-        "| max_T:",
+        "| dataset max_T:",
         max_T,
     )
     ##################################################################
@@ -64,151 +66,162 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
     omega_mu = pyro.sample(
         "omega_mu",
         dist.LogNormal(
-            torch.tensor(0.0, device=device), torch.tensor(1.0, device=device)
+            torch.full((), 0.0, device=device),
+            torch.full((), 1.0, device=device),
         ),
     )
     omega_sigma = pyro.sample(
         "omega_sigma",
         dist.LogNormal(
-            torch.tensor(0.0, device=device), torch.tensor(0.5, device=device)
+            torch.full((), 0.0, device=device),
+            torch.full((), 0.5, device=device),
         ),
     )
 
     ab_sum_a_hyper = pyro.sample(
         "ab_sum_a_hyper",
         dist.LogNormal(
-            torch.tensor(0.5, device=device), torch.tensor(0.5, device=device)
+            torch.full((), 0.5, device=device),
+            torch.full((), 0.5, device=device),
         ),
     )
     ab_sum_b_hyper = pyro.sample(
         "ab_sum_b_hyper",
         dist.LogNormal(
-            torch.tensor(0.5, device=device), torch.tensor(0.5, device=device)
+            torch.full((), 0.5, device=device),
+            torch.full((), 0.5, device=device),
         ),
     )
     ab_frac_a_hyper = pyro.sample(
         "ab_frac_a_hyper",
         dist.LogNormal(
-            torch.tensor(0.5, device=device), torch.tensor(0.5, device=device)
+            torch.full((), 0.5, device=device),
+            torch.full((), 0.5, device=device),
         ),
     )
     ab_frac_b_hyper = pyro.sample(
         "ab_frac_b_hyper",
         dist.LogNormal(
-            torch.tensor(0.5, device=device), torch.tensor(0.5, device=device)
+            torch.full((), 0.5, device=device),
+            torch.full((), 0.5, device=device),
         ),
     )
     phi_mu = pyro.sample(
         "phi_mu",
         dist.Normal(
-            torch.tensor(0.0, device=device), torch.tensor(1.0, device=device)
+            torch.full((), 0.0, device=device),
+            torch.full((), 1.0, device=device),
         ),
     )
     phi_sigma = pyro.sample(
         "phi_sigma",
         dist.LogNormal(
-            torch.tensor(0.0, device=device), torch.tensor(0.5, device=device)
+            torch.full((), 0.0, device=device),
+            torch.full((), 0.5, device=device),
         ),
     )
     sigma_init_mu = pyro.sample(
         "sigma_init_mu",
         dist.LogNormal(
-            torch.tensor(2.0, device=device), torch.tensor(0.5, device=device)
+            torch.full((), 2.0, device=device),
+            torch.full((), 0.5, device=device),
         ),
     )
     sigma_init_sigma = pyro.sample(
         "sigma_init_sigma",
         dist.LogNormal(
-            torch.tensor(0.0, device=device), torch.tensor(0.5, device=device)
+            torch.full((), 0.0, device=device),
+            torch.full((), 0.5, device=device),
         ),
     )
     df_mu = pyro.sample(
         "df_mu",
         dist.LogNormal(
-            torch.tensor(1.0, device=device), torch.tensor(0.5, device=device)
+            torch.full((), 1.0, device=device),
+            torch.full((), 0.5, device=device),
         ),
     )
     df_sigma = pyro.sample(
         "df_sigma",
         dist.LogNormal(
-            torch.tensor(0.0, device=device), torch.tensor(0.5, device=device)
+            torch.full((), 0.0, device=device),
+            torch.full((), 0.5, device=device),
         ),
     )
     lambda_decay = pyro.sample(
         "lambda_decay",
         dist.Beta(
-            torch.tensor(2.0, device=device), torch.tensor(2.0, device=device)
+            torch.full((), 2.0, device=device),
+            torch.full((), 2.0, device=device),
         ),
     )
 
     ###################################################################
-    print("MODEL() | about to enter assets plate, batch_size =", batch_size)
-    print("MODEL() DEBUG (ASSET PLATE): device", device)
+    print("MODEL | about to enter assets plate, batch_size =", batch_size)
+    print("MODEL | (ASSET PLATE): device", device)
     ######################################################################
 
     # ==== ASSET-SPECIFIC PARAMETERS ====
     with pyro.plate("assets", batch_size, dim=-2, device=device):
         ######################################################
         print(
-            f"MODEL() DEBUG: omega_mu.device={omega_mu.device}, omega_sigma.device={omega_sigma.device}, batch_size={batch_size}"
+            f"MODEL | omega_mu.device={omega_mu.device}, omega_sigma.device={omega_sigma.device}, batch_size={batch_size}"
         )
         #######################################################
         garch_omega = pyro.sample(
             "garch_omega", dist.LogNormal(omega_mu, omega_sigma)
         )
         #########################################################
-        print("MODEL DEBUG: garch_omega.device", garch_omega.device)
+        print("MODEL | garch_omega.device", garch_omega.device)
         #########################################################
         alpha_beta_sum = pyro.sample(
             "alpha_beta_sum", dist.Beta(ab_sum_a_hyper, ab_sum_b_hyper)
         )
         #########################################################
-        print("MODEL DEBUG: alpha_beta_sum.device", alpha_beta_sum.device)
+        print("MODEL | alpha_beta_sum.device", alpha_beta_sum.device)
         #########################################################
         alpha_frac = pyro.sample(
             "alpha_frac", dist.Beta(ab_frac_a_hyper, ab_frac_b_hyper)
         )
         #########################################################
-        print("MODEL DEBUG: alpha_frac.device", alpha_frac.device)
+        print("MODEL | alpha_frac.device", alpha_frac.device)
         #########################################################
         phi = pyro.sample("phi", dist.Normal(phi_mu, phi_sigma))
         #########################################################
-        print("MODEL DEBUG: phi.device", phi.device)
+        print("MODEL | phi.device", phi.device)
         #########################################################
         garch_sigma_init = pyro.sample(
             "garch_sigma_init", dist.LogNormal(sigma_init_mu, sigma_init_sigma)
         )
         #########################################################
-        print("MODEL DEBUG: garch_sigma_init.device", garch_sigma_init.device)
+        print("MODEL | garch_sigma_init.device", garch_sigma_init.device)
         #########################################################
         raw_df = pyro.sample(
             "degrees_of_freedom_raw", dist.LogNormal(df_mu, df_sigma)
         )
         #########################################################
-        print("MODEL DEBUG: raw_df.device", raw_df.device)
+        print("MODEL | raw_df.device", raw_df.device)
         #########################################################
         degrees_of_freedom = raw_df + 2.0
         asset_weight = pyro.sample(
             "asset_weight",
             dist.Beta(
-                torch.tensor(2.0, device=device),
-                torch.tensor(2.0, device=device),
+                torch.full((), 2.0, device=device),
+                torch.full((), 2.0, device=device),
             ),
         )
         #########################################################
-        print(
-            "MODEL DEBUG: degrees_of_freedom.device", degrees_of_freedom.device
-        )
+        print("MODEL | degrees_of_freedom.device", degrees_of_freedom.device)
         #########################################################
 
         #####################################################################3
-        print("MODEL() | garch_omega.shape", garch_omega.shape)
-        print("MODEL() | alpha_beta_sum.shape", alpha_beta_sum.shape)
-        print("MODEL() | alpha_frac.shape", alpha_frac.shape)
-        print("MODEL() | phi.shape", phi.shape)
-        print("MODEL() | garch_sigma_init.shape", garch_sigma_init.shape)
-        print("MODEL() | degrees_of_freedom_raw.shape", raw_df.shape)
-        print("MODEL() | asset_weight.shape", asset_weight.shape)
+        print("MODEL | garch_omega.shape", garch_omega.shape)
+        print("MODEL | alpha_beta_sum.shape", alpha_beta_sum.shape)
+        print("MODEL | alpha_frac.shape", alpha_frac.shape)
+        print("MODEL | phi.shape", phi.shape)
+        print("MODEL | garch_sigma_init.shape", garch_sigma_init.shape)
+        print("MODEL | degrees_of_freedom_raw.shape", raw_df.shape)
+        print("MODEL | asset_weight.shape", asset_weight.shape)
         ##################################################################3
 
         sigma_prev = garch_sigma_init
@@ -217,13 +230,8 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
         asset_lengths = lengths
         asset_returns = returns
 
-        for t in pyro.markov(
-            range(
-                max_T
-                if getattr(args, "jit", False)
-                else asset_lengths.max().item()
-            )
-        ):
+        assert max_T is not None
+        for t in pyro.markov(range(max_T)):
             valid_mask = t < asset_lengths
             decay_exponent = max_T - t - 1
 
@@ -253,7 +261,7 @@ def ar_garch_model_student_t_multi_asset_partial_pooling(
                 )
                 ############################################################
                 print(
-                    f"MODEL() weighted_log_prob.device: {weighted_log_prob.device}, combined_weight.device: {combined_weight.device}, log_prob.device: {log_prob.device}"
+                    f"MODEL | weighted_log_prob.device: {weighted_log_prob.device}, combined_weight.device: {combined_weight.device}, log_prob.device: {log_prob.device}"
                 )
                 #############################################################
 
@@ -288,7 +296,11 @@ if __name__ == "__main__":
     pyro.render_model(
         ar_garch_model_student_t_multi_asset_partial_pooling,
         model_args=(dummy_returns, dummy_lengths),
-        model_kwargs={"args": args},
+        model_kwargs={
+            "args": args,
+            "indices": torch.arange(dummy_returns.shape[0]),
+            "max_T": 3,
+        },
         filename="ar_garch_StudT_multiassets_partialpool.jpg",
         render_params=True,
         render_distributions=True,
